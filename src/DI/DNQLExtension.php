@@ -7,11 +7,16 @@ use Nette\DI\CompilerExtension;
 use Nette\Schema\Expect;
 use Nette\Schema\Schema;
 use Tracy\Debugger;
+use WebChemistry\DNQL\Bridges\Filter\DNQLDataSourceFactory;
 use WebChemistry\DNQL\Converter\ConverterFactory;
 use WebChemistry\DNQL\Mapping\EntityMapping;
+use WebChemistry\DNQL\Query\IQueryBuilder;
 use WebChemistry\DNQL\Query\IQueryFactory;
+use WebChemistry\DNQL\Query\QueryBuilder;
 use WebChemistry\DNQL\Query\QueryFactory;
 use WebChemistry\DNQL\Tracy\BlueScreenPanel;
+use WebChemistry\Filter\DataSource\DataSourceRegistry;
+use WebChemistry\Filter\DataSource\IDataSourceFactory;
 
 class DNQLExtension extends CompilerExtension {
 
@@ -19,6 +24,7 @@ class DNQLExtension extends CompilerExtension {
 		return Expect::structure([
 			'mapping' => Expect::arrayOf('string'),
 			'entities' => Expect::arrayOf('string'),
+			'queryBuilder' => Expect::string(QueryBuilder::class),
 		]);
 	}
 
@@ -40,7 +46,23 @@ class DNQLExtension extends CompilerExtension {
 
 		$builder->addDefinition($this->prefix('queryFactory'))
 			->setType(IQueryFactory::class)
-			->setFactory(QueryFactory::class);
+			->setFactory(QueryFactory::class, [
+				'queryBuilder' => $config->queryBuilder,
+			]);
+
+		$builder->addDefinition($this->prefix('dataSourceFactory'))
+			->setType(IDataSourceFactory::class)
+			->setFactory(DNQLDataSourceFactory::class);
+	}
+
+	public function beforeCompile() {
+		$builder = $this->getContainerBuilder();
+
+		$name = $builder->getByType(DataSourceRegistry::class);
+		if ($name) {
+			$builder->getDefinition($name)
+				->addSetup('addFactory', [IQueryBuilder::class, $this->prefix('@dataSourceFactory')]);
+		}
 	}
 
 	public function afterCompile(Nette\PhpGenerator\ClassType $class) {

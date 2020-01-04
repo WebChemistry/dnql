@@ -13,18 +13,24 @@ final class QueryFactory implements IQueryFactory {
 	/** @var EntityManagerInterface */
 	private $em;
 
-	public function __construct(ConverterFactory $converterFactory, EntityManagerInterface $em) {
+	/** @var string */
+	private $queryBuilder;
+
+	public function __construct(string $queryBuilder, ConverterFactory $converterFactory, EntityManagerInterface $em) {
 		$this->converterFactory = $converterFactory;
 		$this->em = $em;
+		$this->queryBuilder = $queryBuilder;
 	}
 
 	public function createQuery(string $dqnl, iterable $parameters): Query {
 		return new Query($dqnl, $this->em, $this->converterFactory, $parameters);
 	}
 
-	public function createQueryBuilder(string $from, string $alias): QueryBuilder {
-		$qb = new QueryBuilder($this->converterFactory, $this->em);
+	public function createQueryBuilder(string $from, string $alias): IQueryBuilder {
+		$class = $this->queryBuilder;
+		$qb = new $class($this->converterFactory, $this->em);
 		$qb->from($from, $alias);
+		$qb->select($alias);
 
 		return $qb;
 	}

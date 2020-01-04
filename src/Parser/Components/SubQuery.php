@@ -7,21 +7,22 @@ use PhpMyAdmin\SqlParser\Statements\SelectStatement;
 class SubQuery {
 
 	/** @var SelectStatement */
-	private $stmt;
+	public $stmt;
 
-	public function __construct(SelectStatement $stmt) {
+	/** @var string|null */
+	public $alias;
+
+	/** @var bool */
+	public $hidden;
+
+	public function __construct(SelectStatement $stmt, ?string $alias, bool $hidden) {
 		$this->stmt = $stmt;
-	}
-
-	/**
-	 * @return SelectStatement
-	 */
-	public function getStmt(): SelectStatement {
-		return $this->stmt;
+		$this->alias = $alias;
+		$this->hidden = $hidden;
 	}
 
 	public static function build(SubQuery $subQuery): string {
-		return '(' . $subQuery->getStmt()->build() . ')';
+		return '(' . $subQuery->stmt->build() . ')';
 	}
 	
 }

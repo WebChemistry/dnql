@@ -5,9 +5,13 @@ namespace WebChemistry\DNQL\Converter;
 use Doctrine\ORM\EntityManagerInterface;
 use Doctrine\ORM\Query\ResultSetMapping;
 use Doctrine\ORM\Query\ResultSetMappingBuilder;
+use LogicException;
 use PhpMyAdmin\SqlParser\Component;
 use PhpMyAdmin\SqlParser\Components\Expression;
+use PhpMyAdmin\SqlParser\Components\GroupKeyword;
+use PhpMyAdmin\SqlParser\Exceptions\LexerException;
 use WebChemistry\DNQL\Converter\Results\ColumnResult;
+use WebChemistry\DNQL\Exceptions\LexerPosition;
 use WebChemistry\DNQL\Mapping\FieldMapping;
 use WebChemistry\DNQL\Metadata\ClassMetadata;
 use PhpMyAdmin\SqlParser\Statements\SelectStatement;
@@ -34,6 +38,9 @@ final class Converter {
 
 	/** @var ClassMetadata[] */
 	protected $mapping = [];
+
+	/** @var string[] */
+	protected $hiddens;
 
 	/** @var string[] */
 	protected $mappingReversed = [];
@@ -65,6 +72,11 @@ final class Converter {
 
 				return $argument . '.' . $this->mapping[$argument]->getParent()->discriminatorColumn['name'];
 			},
+			'isTypeOf' => function (string $argument) {
+				$metadata = $this->getClassMetadata($this->entityMapping->getEntityClass($argument))->getParent();
+
+				return 'IN(' . $metadata->discriminatorValue . ')';
+			},
 			'instanceOf' => function (string $argument) {
 				$metadata = $this->getClassMetadata($this->entityMapping->getEntityClass($argument))->getParent();
 				$subClasses = $metadata->subClasses;
@@ -77,11 +89,31 @@ final class Converter {
 
 				return 'IN(' . implode(',', $types) . ')';
 			},
+			'typeOf' => function (string $argument) {
+				try {
+					$metadata = $this->getClassMetadata($this->entityMapping->getEntityClass($argument))->getParent();
+				} catch (LogicException $e) {
+					throw new ConverterException($e->getMessage());
+				}
+
+				return $metadata->discriminatorValue;
+			},
+			'hidden' => function (string $argument) {
+				if (!isset($this->hiddens[$argument])) {
+					throw new ConverterException("Hidden $argument not exists");
+				}
+
+				return $this->hiddens[$argument];
+			},
 		];
 	}
 
 	public function convert(string $dnql): ConverterResult {
-		$parser = new Parser($dnql);
+		try {
+			$parser = new Parser($dnql);
+		} catch (LexerException $exception) {
+			throw new \WebChemistry\DNQL\Exceptions\LexerException($dnql, $exception->getMessage(), $exception->ch, $exception->pos, $exception);
+		}
 
 		return $this->convertStatement($dnql, $parser->getStmt());
 	}
@@ -98,6 +130,7 @@ final class Converter {
 		$this->processJoins();
 		$this->processWhere();
 		$this->processOrder();
+		$this->processGroupBy();
 
 		return new ConverterResult($this->stmt->build(), $this->fieldMapping->getRsm());
 	}
@@ -109,6 +142,13 @@ final class Converter {
 	private function processOrder(): void {
 		foreach ((array) $this->stmt->order as &$orderKeyword) {
 			$orderKeyword->expr->expr = $this->convertStringToColumn($orderKeyword->expr->expr, $orderKeyword);
+		}
+	}
+
+	private function processGroupBy(): void {
+		/** @var GroupKeyword $item */
+		foreach ((array) $this->stmt->group as $item) {
+			$this->convertExpressionToColumn($item->expr, false);
 		}
 	}
 
@@ -158,12 +198,11 @@ final class Converter {
 			if (!isset($this->mapping[$alias])) {
 				throw new ConverterException("Alias $alias ($alias.$field) not exists", $this->dnql, $component);
 			}
-			$metadata = $this->mapping[$alias];
-			$metadata->validateColumnExists($field);
+			if (!$this->fieldMapping->hasField($alias, $field)) {
+				throw new ConverterException("Field $alias.$field not exists", $this->dnql, $component);
+			}
 
-			$column = $metadata->getParent()->fieldMappings[$field]['columnName'];
-
-			return $alias . '.' . $column;
+			return $this->fieldMapping->getColumnWithTable($alias, $field);
 		}, $query);
 	}
 
@@ -176,28 +215,46 @@ final class Converter {
 			}
 
 			if ($expression instanceof RuntimeFunction) {
-				$column = $expression->expression->expr;
-				switch ($expression->functionName) {
-					case 'string':
-						$this->rsm->addScalarResult($column, $column, 'string');
-						break;
-					case 'int':
-						$this->rsm->addScalarResult($column, $column, 'integer');
-						break;
-					case 'bool':
-						$this->rsm->addScalarResult($column, $column, 'bool');
-						break;
-					case 'discriminator':
-						$full = $this->functions['discriminator']($column);
-						[$table, $column] = explode('.', $full);
+				static $functionMapping = [
+					'string' => 'string',
+					'int' => 'integer',
+					'bool' => 'bool',
+				];
 
-						$expression = new Expression(null, $table, $column, $this->fieldMapping->getDiscriminator($table));
-						break;
-					default:
+				if ($expression->functionName === 'discriminator') {
+					$full = $this->functions['discriminator']($column);
+					[$table, $column] = explode('.', $full);
+
+					$expression = new Expression(null, $table, $column, $this->fieldMapping->getDiscriminator($table)['column']);
+				} else {
+					if (!isset($functionMapping[$expression->functionName])) {
 						throw new ConverterException("Function %{$expression->functionName} not exists", $this->dnql, $expression->expression);
+					}
+					[$column, $alias] = $this->getColumnWithAliasFromRuntimeFunction($expression);
+
+					$this->rsm->addScalarResult($column, $alias, $functionMapping[$expression->functionName]);
+					$expr = new Expression();
+					$expr->expr = "$column AS $alias";
+
+					$array[] = $expr;
 				}
 
 				$array[] = $expression;
+
+				continue;
+			}
+
+			if ($expression instanceof SubQuery) {
+				$result = $this->newInstance()->convertStatement($this->dnql, $expression->stmt, $this->mapping);
+				$expr = new Expression();
+				if ($expression->hidden) {
+					$this->hiddens[$expression->alias] = $result->sql;
+				} else {
+					$expr->alias = $expression->alias;
+					$expr->expr = "({$result->sql}) $alias";
+
+					$array[] = $expr;
+				}
 
 				continue;
 			}
@@ -226,8 +283,6 @@ final class Converter {
 				$array[] = new Expression(null, $result->tableAlias, $result->column, $result->alias);
 
 				continue;
-			} else if ($expression instanceof SubQuery) {
-				$this->newInstance()->convertStatement($this->dnql, $expression->getStmt(), $this->mapping);
 			}
 
 			$array[] = $expression;
@@ -236,24 +291,68 @@ final class Converter {
 		$this->stmt->expr = $array;
 	}
 
+	private function getColumnWithAliasFromRuntimeFunction(RuntimeFunction $expression): array {
+		$array = array_map(function (string $value) {
+			return trim($value);
+		}, explode(',', $expression->expression->expr));
+
+		$column = $array[0];
+		if (count($array) === 1) {
+			$alias = $array[0];
+		} else {
+			$alias = $array[1];
+		}
+		$column = $this->convertStringToColumn($column, $expression->expression);
+
+		return [$column, $alias];
+	}
+
 	/**
 	 * @return ColumnResult[]
 	 */
 	private function selectAll(string $tableAlias): array {
-		$mapping = $this->fieldMapping->getColumnMapping($tableAlias);
+		$columnMapping = $this->fieldMapping->getColumnMapping($tableAlias);
+		$aliasMapping = $this->fieldMapping->getColumnAliasMapping($tableAlias);
 		$columns = [];
-		foreach ($mapping as $column => $alias) {
+		foreach ($columnMapping as $field => $column) {
+			$alias = $aliasMapping[$field];
 			$columns[] = new ColumnResult($tableAlias, $column, $alias);
+		}
+		if ($discriminator = $this->fieldMapping->getDiscriminator($tableAlias)) {
+			$columns[] = new ColumnResult($tableAlias, $discriminator['column'], $discriminator['alias']);
 		}
 
 		return $columns;
 	}
 
+	private function convertExpressionToColumn(Expression $expr, bool $addAlias = true): void {
+		if (!$expr->table) {
+			return;
+		}
+		$tableAlias = $expr->table;
+		$field = $expr->column;
+
+		$column = $this->fieldMapping->getColumn($tableAlias, $field);
+
+		if (!$column) {
+			$entity = $this->mapping[$tableAlias]->getName();
+
+			throw new ConverterException("Field $tableAlias.$field not exists in $entity", $this->dnql, $component);
+		}
+
+		if ($addAlias) {
+			$alias = $this->fieldMapping->getAliasColumn($tableAlias, $field);
+			$expr->alias = $alias;
+		}
+
+		$expr->column = $column;
+		$expr->expr = $tableAlias . '.' . $column;
+	}
+
 	private function selectColumn(string $column, ?Component $component = null): ColumnResult {
 		[$tableAlias, $field] = explode('.', $column);
-		$alias = $this->fieldMapping->getColumnAliasByColumn($tableAlias, $field);
-		$metadata = $this->mapping[$tableAlias];
-		$column = $metadata->getParent()->getColumnName($field);
+		$alias = $this->fieldMapping->getAliasColumn($tableAlias, $field);
+		$column = $this->fieldMapping->getColumn($tableAlias, $field);
 
 		if (!$alias) {
 			$entity = $this->mapping[$tableAlias]->getName();

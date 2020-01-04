@@ -5,10 +5,10 @@ namespace WebChemistry\DNQL\Query\Parts;
 class From {
 
 	/** @var string */
-	private $expression;
+	public $expression;
 
 	/** @var string */
-	private $alias;
+	public $alias;
 
 	public function __construct(string $expression, string $alias) {
 		$this->expression = $expression;

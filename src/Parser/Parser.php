@@ -3,6 +3,7 @@
 namespace WebChemistry\DNQL\Parser;
 
 use PhpMyAdmin\SqlParser\Exceptions\ParserException;
+use PhpMyAdmin\SqlParser\Lexer as SQLLexer;
 use PhpMyAdmin\SqlParser\Parser as SQLParser;
 use PhpMyAdmin\SqlParser\Statements\SelectStatement;
 use WebChemistry\DNQL\DNQLException;
@@ -27,6 +28,8 @@ final class Parser {
 			SQLParser::$KEYWORD_PARSERS['JOIN']['class'] = JoinKeyword::class;
 			SQLParser::$KEYWORD_PARSERS['LEFT JOIN']['class'] = JoinKeyword::class;
 			SQLParser::$KEYWORD_PARSERS['RIGHT JOIN']['class'] = JoinKeyword::class;
+
+			SQLLexer::$PARSER_METHODS[] = Lexer::class . '::parse';
 		}
 		try {
 			$this->stmt = self::parse($sql);
@@ -65,8 +68,14 @@ final class Parser {
 				if ($expression->subquery !== 'SELECT') {
 					throw new DNQLException('DNQL supports only SELECT sub query');
 				}
+				$hidden = $expression->function === 'HIDDEN';
+				$expr = $expression->expr;
+				if ($hidden) {
+					$expr = trim($expr);
+					$expr = substr($expr, 7, -1);
+				}
 
-				$this->stmt->expr[$i] = new SubQuery(self::parse($expression->expr));
+				$this->stmt->expr[$i] = new SubQuery(self::parse($expr), $expression->alias, $expression->function === 'HIDDEN');
 			}
 		}
 	}

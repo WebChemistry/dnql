@@ -16,8 +16,10 @@ final class FieldMapping {
 	/** @var EntityManagerInterface */
 	private $em;
 
+	private $mapping;
+
 	/** @var mixed[] */
-	private $mapping = [];
+	private $aliasMapping = [];
 
 	/** @var mixed[] */
 	private $columnMapping = [];
@@ -38,24 +40,32 @@ final class FieldMapping {
 		return $this->em->getClassMetadata($class);
 	}
 
-	public function getColumnAliasByColumn(string $alias, string $column): ?string {
-		return $this->mapping[$alias][$column] ?? null;
+	public function getColumnWithTable(string $entityAlias, string $field): string {
+		return $entityAlias . '.' . ($this->getColumn($entityAlias, $field));
 	}
 
 	public function getColumn(string $entityAlias, string $field): ?string {
-		return $this->mapping[$entityAlias][$field] ?? null;
+		return $this->columnMapping[$entityAlias][$field] ?? null;
 	}
 
-	public function getMappingByAlias(string $alias): ?array {
-		return $this->mapping[$alias] ?? null;
+	public function getAliasColumn(string $entityAlias, string $field): ?string {
+		return $this->aliasMapping[$entityAlias][$field] ?? null;
+	}
+
+	public function getColumnAliasMapping(string $alias): ?array {
+		return $this->aliasMapping[$alias] ?? null;
 	}
 
 	public function getColumnMapping(string $alias): ?array {
 		return $this->columnMapping[$alias] ?? null;
 	}
 
-	public function getDiscriminator(string $alias): ?string {
+	public function getDiscriminator(string $alias): ?array {
 		return $this->discriminators[$alias] ?? null;
+	}
+
+	public function hasField(string $alias, string $field): bool {
+		return isset($this->aliasMapping[$alias][$field]);
 	}
 
 	public function addEntityResult(string $class, string $alias): self {
@@ -83,8 +93,8 @@ final class FieldMapping {
 			$meta = $this->getClassMetadata($class);
 			foreach ($meta->fieldMappings as $mapping) {
 				$columnAlias = $this->generateColumnAlias($mapping['columnName'], $alias);
-				$this->mapping[$alias][$mapping['fieldName']] = $columnAlias;
-				$this->columnMapping[$alias][$mapping['columnName']] = $columnAlias;
+				$this->aliasMapping[$alias][$mapping['fieldName']] = $columnAlias;
+				$this->columnMapping[$alias][$mapping['fieldName']] = $mapping['columnName'];
 
 				$this->rsm->addFieldResult($alias, $columnAlias, $mapping['fieldName'], $class);
 			}
@@ -99,8 +109,8 @@ final class FieldMapping {
 						$columnAlias = $this->generateColumnAlias($columnName, $alias);
 						$columnType = PersisterHelper::getTypeOfColumn($joinColumn['referencedColumnName'], $target, $this->em);
 
-						$this->mapping[$alias][$mapping['fieldName']] = $columnAlias;
-						$this->columnMapping[$alias][$columnName] = $columnAlias;
+						$this->aliasMapping[$alias][$mapping['fieldName']] = $columnAlias;
+						$this->columnMapping[$alias][$mapping['fieldName']] = $columnName;
 						$this->rsm->addMetaResult($alias, $columnAlias, $columnName, $isIdentifier, $columnType);
 					}
 				}
@@ -108,9 +118,13 @@ final class FieldMapping {
 		}
 
 		if ($mapping = $metadata->discriminatorColumn) {
-			$this->discriminators[$alias] = $columnAlias = $this->generateColumnAlias($mapping['name'], $alias);
+			$columnAlias = $this->generateColumnAlias($mapping['name'], $alias);
+			$this->discriminators[$alias] = [
+				'alias' => $columnAlias,
+				'field' => $mapping['fieldName'],
+				'column' => $mapping['name'],
+			];
 
-			$this->columnMapping[$alias][$mapping['name']] = $columnAlias;
 			$this->rsm->setDiscriminatorColumn($alias, $columnAlias);
 			$this->rsm->addMetaResult($alias, $columnAlias, $mapping['fieldName'], false, $mapping['type']);
 		}

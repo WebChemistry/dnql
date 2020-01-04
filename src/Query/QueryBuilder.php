@@ -6,13 +6,14 @@ use Doctrine\ORM\EntityManagerInterface;
 use ProLib\QuestionMarkReplacer;
 use WebChemistry\DNQL\Converter\ConverterFactory;
 use WebChemistry\DNQL\Query\Parts\From;
+use WebChemistry\DNQL\Query\Parts\HiddenCollection;
 use WebChemistry\DNQL\Query\Parts\ICollection;
 use WebChemistry\DNQL\Query\Parts\JoinCollection;
 use WebChemistry\DNQL\Query\Parts\StringCollection;
 use WebChemistry\DNQL\Query\Parts\Where;
 use WebChemistry\DNQL\Query\Parts\WhereCollection;
 
-final class QueryBuilder {
+class QueryBuilder implements IQueryBuilder {
 
 	/** @var array */
 	protected $parts = [
@@ -22,6 +23,7 @@ final class QueryBuilder {
 		'order' => [],
 		'group' => [],
 		'join' => [],
+		'hidden' => [],
 	];
 
 	/** @var array */
@@ -47,12 +49,13 @@ final class QueryBuilder {
 			'order' => new StringCollection(),
 			'group' => new StringCollection(),
 			'join' => new JoinCollection(),
+			'hidden' => new HiddenCollection(),
 		];
 		$this->converterFactory = $converterFactory;
 		$this->em = $em;
 	}
 
-	public function create() {
+ 	public function create() {
 		return new static($this->converterFactory, $this->em);
 	}
 
@@ -120,6 +123,12 @@ final class QueryBuilder {
 
 	public function addSelect($select, array $params = []) {
 		$this->parts['select']->add($this->parseParams($select, $params));
+
+		return $this;
+	}
+
+	public function addHidden($expression, string $name) {
+		$this->parts['hidden']->add($expression, $name);
 
 		return $this;
 	}
@@ -202,6 +211,7 @@ final class QueryBuilder {
 
 	protected function selfToString(): string {
 		$sql = $this->buildPart('select', 'SELECT');
+		$sql .= $this->buildPart('hidden', ',');
 		$sql .= $this->buildPart('from', 'FROM');
 		$sql .= $this->buildPart('join', null);
 		$sql .= $this->buildPart('where', 'WHERE');
